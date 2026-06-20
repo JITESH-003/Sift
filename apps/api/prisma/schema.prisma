@@ -1,0 +1,154 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
+}
+
+enum DataSourceKind {
+  postgres
+}
+
+enum MessageRole {
+  user
+  assistant
+}
+
+enum QueryStatus {
+  ok
+  blocked
+  error
+}
+
+enum Confidence {
+  high
+  medium
+  low
+}
+
+enum EmbeddingKind {
+  schema_chunk
+  qa_pair
+}
+
+enum FeedbackVote {
+  up
+  down
+}
+
+model User {
+  id                 String         @id @default(cuid())
+  email              String         @unique
+  passwordHash       String
+  name               String?
+  hashedRefreshToken String?
+  createdAt          DateTime       @default(now())
+  dataSources        DataSource[]
+  conversations      Conversation[]
+  feedback           Feedback[]
+}
+
+model DataSource {
+  id            String           @id @default(cuid())
+  userId        String
+  user          User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+  name          String
+  kind          DataSourceKind   @default(postgres)
+  connectionRef String
+  createdAt     DateTime         @default(now())
+  snapshots     SchemaSnapshot[]
+  conversations Conversation[]
+  embeddings    Embedding[]
+
+  @@index([userId])
+}
+
+model SchemaSnapshot {
+  id           String     @id @default(cuid())
+  dataSourceId String
+  dataSource   DataSource @relation(fields: [dataSourceId], references: [id], onDelete: Cascade)
+  schemaJson   Json
+  compactText  String
+  createdAt    DateTime   @default(now())
+
+  @@index([dataSourceId])
+}
+
+model Conversation {
+  id           String     @id @default(cuid())
+  userId       String
+  user         User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+  dataSourceId String
+  dataSource   DataSource @relation(fields: [dataSourceId], references: [id], onDelete: Cascade)
+  title        String?
+  createdAt    DateTime   @default(now())
+  messages     Message[]
+
+  @@index([userId])
+  @@index([dataSourceId])
+}
+
+model Message {
+  id             String       @id @default(cuid())
+  conversationId String
+  conversation   Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  role           MessageRole
+  content        String
+  createdAt      DateTime     @default(now())
+  query          Query?
+  feedback       Feedback[]
+
+  @@index([conversationId])
+}
+
+model Query {
+  id               String      @id @default(cuid())
+  messageId        String      @unique
+  message          Message     @relation(fields: [messageId], references: [id], onDelete: Cascade)
+  sql              String
+  status           QueryStatus
+  rowCount         Int?
+  latencyMs        Int?
+  promptTokens     Int?
+  completionTokens Int?
+  costUsd          Decimal?    @db.Decimal(10, 6)
+  confidence       Confidence?
+  retried          Boolean     @default(false)
+  errorText        String?
+  createdAt        DateTime    @default(now())
+}
+
+model QueryResultCache {
+  id         String   @id @default(cuid())
+  queryHash  String   @unique
+  resultJson Json
+  createdAt  DateTime @default(now())
+}
+
+model Embedding {
+  id           String        @id @default(cuid())
+  dataSourceId String
+  dataSource   DataSource    @relation(fields: [dataSourceId], references: [id], onDelete: Cascade)
+  kind         EmbeddingKind
+  content      String
+  metaJson     Json?
+  createdAt    DateTime      @default(now())
+
+  @@index([dataSourceId])
+}
+
+model Feedback {
+  id        String       @id @default(cuid())
+  messageId String
+  message   Message      @relation(fields: [messageId], references: [id], onDelete: Cascade)
+  userId    String
+  user      User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  vote      FeedbackVote
+  createdAt DateTime     @default(now())
+
+  @@index([messageId])
+  @@index([userId])
+}
