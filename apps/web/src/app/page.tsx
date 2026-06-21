@@ -1,62 +1,51 @@
 "use client";
 
+import { useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
-import { Badge } from "@/components/ui/badge";
-
-const apiUrl = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:3001";
-
-type HealthState = "checking" | "ok" | "down";
-
-const statusCopy: Record<HealthState, string> = {
-  checking: "Checking API…",
-  ok: "API online",
-  down: "API unreachable",
-};
-
-const statusDot: Record<HealthState, string> = {
-  checking: "bg-amber-500",
-  ok: "bg-success",
-  down: "bg-red-500",
-};
+import { Button } from "@/components/ui/button";
+import { useAuth } from "@/lib/auth-context";
 
 export default function Home() {
-  const [health, setHealth] = useState<HealthState>("checking");
+  const router = useRouter();
+  const { user, hydrated, guest } = useAuth();
+  const [pending, setPending] = useState(false);
 
   useEffect(() => {
-    let active = true;
-    fetch(`${apiUrl}/health`)
-      .then((res) => (res.ok ? res.json() : Promise.reject(res)))
-      .then(() => {
-        if (active) setHealth("ok");
-      })
-      .catch(() => {
-        if (active) setHealth("down");
-      });
-    return () => {
-      active = false;
-    };
-  }, []);
+    if (hydrated && user) router.replace("/app");
+  }, [hydrated, user, router]);
+
+  async function tryGuest() {
+    setPending(true);
+    try {
+      await guest();
+      router.push("/app");
+    } catch {
+      setPending(false);
+    }
+  }
 
   return (
-    <main className="flex flex-1 flex-col items-center justify-center bg-background px-6 text-center text-foreground">
-      <div className="flex flex-col items-center gap-7">
-        <Badge variant="neutral" className="shadow-sm">
-          <span
-            className={`h-2 w-2 rounded-full ${statusDot[health]} ${
-              health === "checking" ? "animate-pulse" : ""
-            }`}
-          />
-          {statusCopy[health]}
-        </Badge>
+    <main className="flex flex-1 flex-col items-center justify-center bg-background px-6 text-center">
+      <div className="flex max-w-xl flex-col items-center gap-7">
         <h1 className="text-7xl font-light tracking-tight sm:text-8xl">Sift</h1>
         <p className="max-w-md text-lg leading-8 text-muted">
-          Talk to your data. Ask a question in plain English and get the chart —
-          plus the exact, safely-executed SQL behind it.
+          Ask your database anything in plain English. Sift writes the SQL, runs
+          it safely, and shows you the chart — plus the exact query behind it.
         </p>
-        <div className="mt-1 h-px w-16 bg-accent/60" />
-        <p className="text-xs uppercase tracking-[0.2em] text-subtle">
-          Phase 0 · rails online
-        </p>
+        <div className="h-px w-16 bg-accent/60" />
+        <div className="flex flex-col gap-3 sm:flex-row">
+          <Button onClick={() => router.push("/login")}>Sign in</Button>
+          <Button variant="outline" onClick={() => router.push("/register")}>
+            Create account
+          </Button>
+          <Button
+            variant="ghost"
+            disabled={pending}
+            onClick={() => void tryGuest()}
+          >
+            {pending ? "Starting…" : "Try the demo"}
+          </Button>
+        </div>
       </div>
     </main>
   );
