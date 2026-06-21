@@ -15,5 +15,6 @@ import { VizService } from './viz.service';
     TargetDbService,
     VizService,
   ],
+  exports: [DataSourcesService],
 })
 export class DataSourcesModule {}

@@ -19,7 +19,7 @@ type CachedPayload = {
   chart: Chart;
 };
 
-type RunResult =
+export type RunResult =
   | {
       status: 'ok';
       sql: string;
