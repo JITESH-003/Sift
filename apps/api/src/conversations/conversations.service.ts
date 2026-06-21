@@ -12,6 +12,10 @@ import { LlmService } from '../llm/llm.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { CreateConversationDto } from './dto/create-conversation.dto';
 
+export type AskStreamEvent =
+  | { type: 'status'; value: 'generating' | 'executing' | 'retrying' }
+  | { type: 'sql'; sql: string };
+
 @Injectable()
 export class ConversationsService {
   constructor(
@@ -56,7 +60,12 @@ export class ConversationsService {
     return { ...conversation, messages };
   }
 
-  async ask(userId: string, id: string, question: string) {
+  async ask(
+    userId: string,
+    id: string,
+    question: string,
+    onEvent: (event: AskStreamEvent) => void = () => undefined,
+  ) {
     const conversation = await this.findOwned(userId, id);
     const snapshot = await this.prisma.schemaSnapshot.findFirst({
       where: { dataSourceId: conversation.dataSourceId },
@@ -72,7 +81,10 @@ export class ConversationsService {
       data: { conversationId: id, role: 'user', content: question },
     });
 
+    onEvent({ type: 'status', value: 'generating' });
     let generated = await this.llm.generateSql(snapshot.compactText, question);
+    onEvent({ type: 'sql', sql: generated.sql });
+    onEvent({ type: 'status', value: 'executing' });
     let result = await this.dataSources.run(
       userId,
       conversation.dataSourceId,
@@ -83,12 +95,15 @@ export class ConversationsService {
     let retried = false;
 
     if (result.status !== 'ok') {
+      onEvent({ type: 'status', value: 'retrying' });
       const feedback = result.status === 'error' ? result.error : result.reason;
       const retry = await this.llm.generateSql(
         snapshot.compactText,
         question,
         feedback,
       );
+      onEvent({ type: 'sql', sql: retry.sql });
+      onEvent({ type: 'status', value: 'executing' });
       result = await this.dataSources.run(
         userId,
         conversation.dataSourceId,

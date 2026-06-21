@@ -145,3 +145,67 @@ export const conversationsApi = {
       body: { question },
     }),
 };
+
+type StreamHandlers = {
+  onStatus?: (value: string) => void;
+  onSql?: (sql: string) => void;
+  onFinal: (result: AskResult) => void;
+  onError?: (message: string) => void;
+};
+
+function dispatch(chunk: string, handlers: StreamHandlers) {
+  let event = "message";
+  let data = "";
+  for (const line of chunk.split("\n")) {
+    if (line.startsWith("event:")) event = line.slice(6).trim();
+    else if (line.startsWith("data:")) data += line.slice(5).trim();
+  }
+  if (!data) return;
+  const parsed = JSON.parse(data) as Record<string, unknown>;
+  if (event === "status") handlers.onStatus?.(String(parsed.value ?? ""));
+  else if (event === "sql") handlers.onSql?.(String(parsed.sql ?? ""));
+  else if (event === "final") handlers.onFinal(parsed as unknown as AskResult);
+  else if (event === "error") handlers.onError?.(String(parsed.message ?? "Failed"));
+}
+
+export async function askStream(
+  id: string,
+  question: string,
+  handlers: StreamHandlers,
+): Promise<void> {
+  const open = (token: string | null) =>
+    fetch(`${API_URL}/conversations/${id}/ask/stream`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Accept: "text/event-stream",
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      },
+      body: JSON.stringify({ question }),
+    });
+
+  let res = await open(getAccessToken());
+  if (res.status === 401) {
+    const refreshed = await refresh();
+    if (refreshed) res = await open(refreshed);
+  }
+  if (!res.ok || !res.body) {
+    handlers.onError?.(`Request failed (${res.status})`);
+    return;
+  }
+
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    let boundary = buffer.indexOf("\n\n");
+    while (boundary !== -1) {
+      dispatch(buffer.slice(0, boundary), handlers);
+      buffer = buffer.slice(boundary + 2);
+      boundary = buffer.indexOf("\n\n");
+    }
+  }
+}

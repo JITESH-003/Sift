@@ -6,8 +6,10 @@ import {
   HttpStatus,
   Param,
   Post,
+  Res,
   UseGuards,
 } from '@nestjs/common';
+import type { Response } from 'express';
 import { CurrentUser } from '../auth/current-user.decorator';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { ConversationsService } from './conversations.service';
@@ -45,5 +47,39 @@ export class ConversationsController {
     @Body() dto: AskDto,
   ) {
     return this.conversations.ask(userId, id, dto.question);
+  }
+
+  @Post(':id/ask/stream')
+  async askStream(
+    @CurrentUser('userId') userId: string,
+    @Param('id') id: string,
+    @Body() dto: AskDto,
+    @Res() res: Response,
+  ) {
+    res.setHeader('Content-Type', 'text/event-stream');
+    res.setHeader('Cache-Control', 'no-cache, no-transform');
+    res.setHeader('Connection', 'keep-alive');
+    res.flushHeaders();
+    const send = (event: string, data: unknown) => {
+      res.write(`event: ${event}\n`);
+      res.write(`data: ${JSON.stringify(data)}\n\n`);
+    };
+    try {
+      const final = await this.conversations.ask(
+        userId,
+        id,
+        dto.question,
+        (event) => {
+          send(event.type, event);
+        },
+      );
+      send('final', final);
+    } catch (error) {
+      send('error', {
+        message: error instanceof Error ? error.message : 'Request failed',
+      });
+    } finally {
+      res.end();
+    }
   }
 }

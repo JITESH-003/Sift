@@ -5,10 +5,21 @@ import { useEffect, useRef, useState } from "react";
 import { Answer } from "@/components/chat/answer";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { conversationsApi, dataSourcesApi, type AskResult } from "@/lib/api";
+import {
+  askStream,
+  conversationsApi,
+  dataSourcesApi,
+  type AskResult,
+} from "@/lib/api";
 import { useAuth } from "@/lib/auth-context";
 
-type Turn = { id: number; question: string; answer: AskResult | null };
+type Turn = {
+  id: number;
+  question: string;
+  status: string | null;
+  sql: string | null;
+  answer: AskResult | null;
+};
 
 const SUGGESTIONS = [
   "Total revenue by month",
@@ -16,6 +27,12 @@ const SUGGESTIONS = [
   "Top 5 products by revenue",
   "Revenue by customer country",
 ];
+
+const STATUS_LABEL: Record<string, string> = {
+  generating: "Generating SQL…",
+  executing: "Running the query…",
+  retrying: "Fixing the query…",
+};
 
 export default function AppHome() {
   const router = useRouter();
@@ -82,34 +99,37 @@ export default function AppHome() {
     if (!q || !conversationId || asking) return;
     setInput("");
     const id = (turnSeq.current += 1);
-    setTurns((prev) => [...prev, { id, question: q, answer: null }]);
+    setTurns((prev) => [
+      ...prev,
+      { id, question: q, status: "Starting…", sql: null, answer: null },
+    ]);
     setAsking(true);
-    try {
-      const answer = await conversationsApi.ask(conversationId, q);
-      setTurns((prev) => prev.map((t) => (t.id === id ? { ...t, answer } : t)));
-    } catch (e) {
-      const message = e instanceof Error ? e.message : "Request failed";
+    const patch = (changes: Partial<Turn>) =>
       setTurns((prev) =>
-        prev.map((t) =>
-          t.id === id
-            ? {
-                ...t,
-                answer: {
-                  status: "error",
-                  sql: "",
-                  error: message,
-                  meta: {
-                    confidence: "low",
-                    retried: false,
-                    provider: "-",
-                    promptTokens: 0,
-                    completionTokens: 0,
-                  },
-                },
-              }
-            : t,
-        ),
+        prev.map((t) => (t.id === id ? { ...t, ...changes } : t)),
       );
+    try {
+      await askStream(conversationId, q, {
+        onStatus: (value) => patch({ status: STATUS_LABEL[value] ?? value }),
+        onSql: (sql) => patch({ sql }),
+        onFinal: (answer) => patch({ answer, status: null }),
+        onError: (message) =>
+          patch({
+            status: null,
+            answer: {
+              status: "error",
+              sql: "",
+              error: message,
+              meta: {
+                confidence: "low",
+                retried: false,
+                provider: "-",
+                promptTokens: 0,
+                completionTokens: 0,
+              },
+            },
+          }),
+      });
     } finally {
       setAsking(false);
     }
@@ -182,7 +202,17 @@ export default function AppHome() {
               {turn.answer ? (
                 <Answer answer={turn.answer} />
               ) : (
-                <div className="text-sm text-subtle">Thinking…</div>
+                <div className="flex flex-col gap-2">
+                  {turn.sql ? (
+                    <pre className="overflow-x-auto rounded-xl border border-border bg-surface-muted px-3 py-2 font-mono text-xs leading-relaxed text-foreground">
+                      {turn.sql}
+                    </pre>
+                  ) : null}
+                  <div className="flex items-center gap-2 text-sm text-subtle">
+                    <span className="h-2 w-2 animate-pulse rounded-full bg-accent" />
+                    {turn.status ?? "Thinking…"}
+                  </div>
+                </div>
               )}
             </div>
           ))}
