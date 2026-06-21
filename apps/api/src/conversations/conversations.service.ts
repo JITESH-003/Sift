@@ -114,6 +114,7 @@ export class ConversationsService {
       ...result,
       meta: {
         confidence,
+        provider: generated.provider,
         promptTokens: generated.usage.promptTokens,
         completionTokens: generated.usage.completionTokens,
       },
