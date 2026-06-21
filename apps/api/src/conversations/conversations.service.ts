@@ -72,16 +72,36 @@ export class ConversationsService {
       data: { conversationId: id, role: 'user', content: question },
     });
 
-    const generated = await this.llm.generateSql(
-      snapshot.compactText,
-      question,
-    );
-    const result = await this.dataSources.run(
+    let generated = await this.llm.generateSql(snapshot.compactText, question);
+    let result = await this.dataSources.run(
       userId,
       conversation.dataSourceId,
       generated.sql,
     );
-    const confidence = result.status === 'ok' ? 'high' : 'low';
+    let promptTokens = generated.usage.promptTokens;
+    let completionTokens = generated.usage.completionTokens;
+    let retried = false;
+
+    if (result.status !== 'ok') {
+      const feedback = result.status === 'error' ? result.error : result.reason;
+      const retry = await this.llm.generateSql(
+        snapshot.compactText,
+        question,
+        feedback,
+      );
+      result = await this.dataSources.run(
+        userId,
+        conversation.dataSourceId,
+        retry.sql,
+      );
+      retried = true;
+      generated = retry;
+      promptTokens += retry.usage.promptTokens;
+      completionTokens += retry.usage.completionTokens;
+    }
+
+    const confidence =
+      result.status === 'ok' ? (retried ? 'medium' : 'high') : 'low';
 
     const assistantMessage = await this.prisma.message.create({
       data: {
@@ -98,9 +118,10 @@ export class ConversationsService {
         status: result.status,
         rowCount: result.status === 'ok' ? result.rowCount : null,
         latencyMs: result.status === 'ok' ? result.latencyMs : null,
-        promptTokens: generated.usage.promptTokens,
-        completionTokens: generated.usage.completionTokens,
+        promptTokens,
+        completionTokens,
         confidence,
+        retried,
         errorText:
           result.status === 'error'
             ? result.error
@@ -114,9 +135,10 @@ export class ConversationsService {
       ...result,
       meta: {
         confidence,
+        retried,
         provider: generated.provider,
-        promptTokens: generated.usage.promptTokens,
-        completionTokens: generated.usage.completionTokens,
+        promptTokens,
+        completionTokens,
       },
     };
   }
