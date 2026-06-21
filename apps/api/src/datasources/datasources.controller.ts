@@ -1,8 +1,18 @@
-import { Body, Controller, Get, Param, Post, UseGuards } from '@nestjs/common';
+import {
+  Body,
+  Controller,
+  Get,
+  HttpCode,
+  HttpStatus,
+  Param,
+  Post,
+  UseGuards,
+} from '@nestjs/common';
 import { CurrentUser } from '../auth/current-user.decorator';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { DataSourcesService } from './datasources.service';
 import { CreateDataSourceDto } from './dto/create-datasource.dto';
+import { RunSqlDto } from './dto/run-sql.dto';
 
 @UseGuards(JwtAuthGuard)
 @Controller('datasources')
@@ -30,5 +40,15 @@ export class DataSourcesController {
   @Post(':id/introspect')
   introspect(@CurrentUser('userId') userId: string, @Param('id') id: string) {
     return this.dataSources.introspect(userId, id);
+  }
+
+  @HttpCode(HttpStatus.OK)
+  @Post(':id/run')
+  run(
+    @CurrentUser('userId') userId: string,
+    @Param('id') id: string,
+    @Body() dto: RunSqlDto,
+  ) {
+    return this.dataSources.run(userId, id, dto.sql);
   }
 }
