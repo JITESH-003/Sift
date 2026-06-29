@@ -4,6 +4,11 @@ import { Pool, type QueryResultRow } from 'pg';
 
 export type ColumnKind = 'number' | 'date' | 'string';
 export type FieldInfo = { name: string; kind: ColumnKind };
+export type Target = {
+  connectionString: string;
+  schema: string;
+  readonlyRole: boolean;
+};
 
 const NUMERIC_OIDS = new Set([20, 21, 23, 26, 700, 701, 790, 1700]);
 const DATE_OIDS = new Set([1082, 1083, 1114, 1184, 1266]);
@@ -16,29 +21,45 @@ function kindFromOid(oid: number): ColumnKind {
 
 @Injectable()
 export class TargetDbService implements OnModuleDestroy {
-  private pool: Pool | null = null;
+  private readonly pools = new Map<string, Pool>();
 
   constructor(private readonly config: ConfigService) {}
 
-  private getPool(): Pool {
-    this.pool ??= new Pool({
-      connectionString: this.config.getOrThrow<string>('DATABASE_URL'),
-      ssl: { rejectUnauthorized: false },
-      max: 3,
-    });
-    return this.pool;
+  appConnectionString(): string {
+    return this.config.getOrThrow<string>('DATABASE_URL');
+  }
+
+  private getPool(connectionString: string): Pool {
+    let pool = this.pools.get(connectionString);
+    if (!pool) {
+      const ssl = connectionString.includes('sslmode=disable')
+        ? false
+        : { rejectUnauthorized: false };
+      pool = new Pool({
+        connectionString,
+        ssl,
+        max: 3,
+        connectionTimeoutMillis: 8000,
+      });
+      this.pools.set(connectionString, pool);
+    }
+    return pool;
   }
 
   async query<T extends QueryResultRow>(
+    target: Target,
     text: string,
     params: unknown[] = [],
   ): Promise<T[]> {
-    const result = await this.getPool().query<T>(text, params);
+    const result = await this.getPool(target.connectionString).query<T>(
+      text,
+      params,
+    );
     return result.rows;
   }
 
   async runReadOnly(
-    schema: string,
+    target: Target,
     sql: string,
     timeoutMs = 5000,
   ): Promise<{
@@ -47,14 +68,16 @@ export class TargetDbService implements OnModuleDestroy {
     rowCount: number;
     latencyMs: number;
   }> {
-    const client = await this.getPool().connect();
+    const client = await this.getPool(target.connectionString).connect();
     const startedAt = Date.now();
     try {
       await client.query('BEGIN');
       await client.query('SET TRANSACTION READ ONLY');
       await client.query(`SET LOCAL statement_timeout = ${timeoutMs}`);
-      await client.query(`SET LOCAL search_path TO "${schema}"`);
-      await client.query('SET LOCAL ROLE copilot_ro');
+      await client.query(`SET LOCAL search_path TO "${target.schema}"`);
+      if (target.readonlyRole) {
+        await client.query('SET LOCAL ROLE copilot_ro');
+      }
       const result = await client.query<Record<string, unknown>>(sql);
       await client.query('COMMIT');
       return {
@@ -75,6 +98,8 @@ export class TargetDbService implements OnModuleDestroy {
   }
 
   async onModuleDestroy() {
-    await this.pool?.end();
+    for (const pool of this.pools.values()) {
+      await pool.end();
+    }
   }
 }

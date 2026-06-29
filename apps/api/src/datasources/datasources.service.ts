@@ -4,13 +4,16 @@ import {
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import { Prisma } from '@prisma/client';
 import { createHash } from 'node:crypto';
+import { decryptSecret, encryptSecret } from '../common/encryption';
+import { assertPublicPostgresUrl } from '../common/ssrf';
 import { PrismaService } from '../prisma/prisma.service';
 import { SafetyService } from '../safety/safety.service';
 import { CreateDataSourceDto } from './dto/create-datasource.dto';
 import { IntrospectionService } from './introspection.service';
-import { TargetDbService } from './target-db.service';
+import { TargetDbService, type Target } from './target-db.service';
 import { VizService, type Chart } from './viz.service';
 
 type CachedPayload = {
@@ -32,6 +35,8 @@ export type RunResult =
   | { status: 'blocked'; reason: string }
   | { status: 'error'; sql: string; error: string };
 
+type ConnectionRef = { mode?: string; schema?: string; cipher?: string };
+
 @Injectable()
 export class DataSourcesService {
   constructor(
@@ -40,15 +45,29 @@ export class DataSourcesService {
     private readonly safety: SafetyService,
     private readonly targetDb: TargetDbService,
     private readonly viz: VizService,
+    private readonly config: ConfigService,
   ) {}
 
-  create(userId: string, dto: CreateDataSourceDto) {
+  async create(userId: string, dto: CreateDataSourceDto) {
+    let connectionRef: string;
+    if (dto.connectionString) {
+      await assertPublicPostgresUrl(dto.connectionString);
+      const cipher = encryptSecret(
+        dto.connectionString,
+        this.config.getOrThrow<string>('APP_ENCRYPTION_KEY'),
+      );
+      connectionRef = JSON.stringify({
+        mode: 'external',
+        cipher,
+        schema: dto.schema ?? 'public',
+      });
+    } else if (dto.schema) {
+      connectionRef = JSON.stringify({ mode: 'local', schema: dto.schema });
+    } else {
+      throw new BadRequestException('Provide a schema or a connectionString');
+    }
     return this.prisma.dataSource.create({
-      data: {
-        userId,
-        name: dto.name,
-        connectionRef: JSON.stringify({ mode: 'local', schema: dto.schema }),
-      },
+      data: { userId, name: dto.name, connectionRef },
     });
   }
 
@@ -70,21 +89,17 @@ export class DataSourcesService {
 
   async introspect(userId: string, id: string) {
     const dataSource = await this.findOwned(userId, id);
-    const schema = this.resolveSchema(dataSource.connectionRef);
+    const target = this.resolveTarget(dataSource.connectionRef);
     const { schemaJson, compactText } =
-      await this.introspection.introspect(schema);
+      await this.introspection.introspect(target);
     return this.prisma.schemaSnapshot.create({
-      data: {
-        dataSourceId: id,
-        schemaJson: schemaJson,
-        compactText,
-      },
+      data: { dataSourceId: id, schemaJson, compactText },
     });
   }
 
   async run(userId: string, id: string, sql: string): Promise<RunResult> {
     const dataSource = await this.findOwned(userId, id);
-    const schema = this.resolveSchema(dataSource.connectionRef);
+    const target = this.resolveTarget(dataSource.connectionRef);
     const verdict = this.safety.validate(sql);
     if (!verdict.ok) {
       return { status: 'blocked', reason: verdict.reason };
@@ -111,7 +126,7 @@ export class DataSourcesService {
 
     try {
       const { rows, fields, rowCount, latencyMs } =
-        await this.targetDb.runReadOnly(schema, verdict.sql);
+        await this.targetDb.runReadOnly(target, verdict.sql);
       const chart = this.viz.pick(fields, rows);
       await this.prisma.queryResultCache
         .create({
@@ -143,17 +158,32 @@ export class DataSourcesService {
     }
   }
 
-  private resolveSchema(connectionRef: string): string {
+  private resolveTarget(connectionRef: string): Target {
     const parsed = this.safeParse(connectionRef);
     if (parsed?.mode === 'local' && parsed.schema) {
-      return parsed.schema;
+      return {
+        connectionString: this.targetDb.appConnectionString(),
+        schema: parsed.schema,
+        readonlyRole: true,
+      };
+    }
+    if (parsed?.mode === 'external' && parsed.cipher) {
+      const connectionString = decryptSecret(
+        parsed.cipher,
+        this.config.getOrThrow<string>('APP_ENCRYPTION_KEY'),
+      );
+      return {
+        connectionString,
+        schema: parsed.schema ?? 'public',
+        readonlyRole: false,
+      };
     }
     throw new BadRequestException('Unsupported data source connection');
   }
 
-  private safeParse(value: string): { mode?: string; schema?: string } | null {
+  private safeParse(value: string): ConnectionRef | null {
     try {
-      return JSON.parse(value) as { mode?: string; schema?: string };
+      return JSON.parse(value) as ConnectionRef;
     } catch {
       return null;
     }

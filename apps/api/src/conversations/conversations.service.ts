@@ -77,6 +77,13 @@ export class ConversationsService {
       );
     }
 
+    if (!conversation.title) {
+      await this.prisma.conversation.update({
+        where: { id },
+        data: { title: question.slice(0, 60) },
+      });
+    }
+
     await this.prisma.message.create({
       data: { conversationId: id, role: 'user', content: question },
     });
@@ -96,7 +103,11 @@ export class ConversationsService {
 
     if (result.status !== 'ok') {
       onEvent({ type: 'status', value: 'retrying' });
-      const feedback = result.status === 'error' ? result.error : result.reason;
+      let feedback = result.status === 'error' ? result.error : result.reason;
+      if (result.status === 'error' && /does not exist/i.test(result.error)) {
+        feedback +=
+          '\nIdentifiers are case-sensitive — wrap table and column names in double quotes (e.g. "TableName").';
+      }
       const retry = await this.llm.generateSql(
         snapshot.compactText,
         question,

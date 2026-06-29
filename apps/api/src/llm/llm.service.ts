@@ -108,6 +108,7 @@ export class LlmService {
       '- Output ONLY the SQL. No prose, no markdown, no comments.',
       '- Exactly one statement, and it must be a SELECT (CTEs are allowed).',
       '- Never modify data. Use only the tables and columns in the schema below.',
+      '- Copy every table and column name EXACTLY as written in the schema below, including any double quotes shown — never drop the quotes from a quoted name. PostgreSQL lowercases unquoted identifiers, so writing "Ticket" as Ticket will fail with "relation does not exist".',
       '- For time series, GROUP BY date_trunc on the timestamp column (one date column), not separate year/month columns.',
       '- Add a sensible ORDER BY and LIMIT for "top N" style questions.',
       '',

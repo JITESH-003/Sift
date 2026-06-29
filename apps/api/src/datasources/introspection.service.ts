@@ -1,5 +1,5 @@
 import { Injectable } from '@nestjs/common';
-import { TargetDbService } from './target-db.service';
+import { TargetDbService, type Target } from './target-db.service';
 
 export type ColumnInfo = {
   name: string;
@@ -34,15 +34,18 @@ export class IntrospectionService {
   constructor(private readonly db: TargetDbService) {}
 
   async introspect(
-    schema: string,
+    target: Target,
   ): Promise<{ schemaJson: SchemaJson; compactText: string }> {
+    const schema = target.schema;
     const tableRows = await this.db.query<{ table_name: string }>(
+      target,
       `SELECT table_name FROM information_schema.tables
        WHERE table_schema = $1 AND table_type = 'BASE TABLE'
        ORDER BY table_name`,
       [schema],
     );
     const columnRows = await this.db.query<ColumnRow>(
+      target,
       `SELECT table_name, column_name, data_type, is_nullable
        FROM information_schema.columns
        WHERE table_schema = $1
@@ -50,6 +53,7 @@ export class IntrospectionService {
       [schema],
     );
     const pkRows = await this.db.query<KeyRow>(
+      target,
       `SELECT tc.table_name, kcu.column_name
        FROM information_schema.table_constraints tc
        JOIN information_schema.key_column_usage kcu
@@ -59,6 +63,7 @@ export class IntrospectionService {
       [schema],
     );
     const fkRows = await this.db.query<FkRow>(
+      target,
       `SELECT tc.table_name,
               kcu.column_name,
               ccu.table_name AS foreign_table_name,
@@ -109,19 +114,30 @@ export class IntrospectionService {
     return { schemaJson, compactText: this.toCompactText(schemaJson) };
   }
 
+  private quoteIdent(name: string): string {
+    return /^[a-z_][a-z0-9_]*$/.test(name) ? name : `"${name}"`;
+  }
+
+  private quoteRef(ref: string): string {
+    const [table, column] = ref.split('.');
+    return column
+      ? `${this.quoteIdent(table)}.${this.quoteIdent(column)}`
+      : ref;
+  }
+
   private toCompactText(schemaJson: SchemaJson): string {
     const lines = schemaJson.tables.map((table) => {
       const cols = table.columns.map((c) => {
-        let entry = `${c.name} ${c.type}`;
+        let entry = `${this.quoteIdent(c.name)} ${c.type}`;
         if (c.isPrimaryKey) {
           entry += ' PK';
         }
         if (c.references) {
-          entry += ` -> ${c.references}`;
+          entry += ` -> ${this.quoteRef(c.references)}`;
         }
         return entry;
       });
-      return `${table.name}(${cols.join(', ')})`;
+      return `${this.quoteIdent(table.name)}(${cols.join(', ')})`;
     });
     return `Schema "${schemaJson.schema}" (PostgreSQL)\n\n${lines.join('\n')}`;
   }

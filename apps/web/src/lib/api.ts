@@ -42,6 +42,18 @@ export type AskResult =
   | { status: "blocked"; reason: string; meta: AskMeta }
   | { status: "error"; sql: string; error: string; meta: AskMeta };
 
+export type SchemaColumn = {
+  name: string;
+  type: string;
+  nullable: boolean;
+  isPrimaryKey: boolean;
+  references?: string;
+};
+
+export type SchemaTable = { name: string; columns: SchemaColumn[] };
+
+export type SchemaJson = { schema: string; tables: SchemaTable[] };
+
 export type DataSource = {
   id: string;
   name: string;
@@ -55,6 +67,26 @@ export type Conversation = {
   dataSourceId: string;
   createdAt: string;
 };
+
+export type QueryRecord = {
+  sql: string;
+  status: "ok" | "blocked" | "error";
+  confidence: "high" | "medium" | "low";
+  retried: boolean;
+  rowCount: number | null;
+  promptTokens: number | null;
+  completionTokens: number | null;
+};
+
+export type Message = {
+  id: string;
+  role: "user" | "assistant";
+  content: string;
+  createdAt: string;
+  query?: QueryRecord | null;
+};
+
+export type ConversationDetail = Conversation & { messages: Message[] };
 
 function safeJson(text: string): unknown {
   if (!text) return null;
@@ -123,12 +155,15 @@ export const authApi = {
 
 export const dataSourcesApi = {
   list: () => authedFetch<DataSource[]>("/datasources"),
-  create: (body: { name: string; schema: string }) =>
-    authedFetch<DataSource>("/datasources", { method: "POST", body }),
+  create: (body: {
+    name: string;
+    schema?: string;
+    connectionString?: string;
+  }) => authedFetch<DataSource>("/datasources", { method: "POST", body }),
   get: (id: string) =>
-    authedFetch<DataSource & { snapshot: { id: string } | null }>(
-      `/datasources/${id}`,
-    ),
+    authedFetch<
+      DataSource & { snapshot: { id: string; schemaJson: SchemaJson } | null }
+    >(`/datasources/${id}`),
   introspect: (id: string) =>
     authedFetch<{ id: string }>(`/datasources/${id}/introspect`, {
       method: "POST",
@@ -139,6 +174,7 @@ export const conversationsApi = {
   list: () => authedFetch<Conversation[]>("/conversations"),
   create: (body: { dataSourceId: string; title?: string }) =>
     authedFetch<Conversation>("/conversations", { method: "POST", body }),
+  get: (id: string) => authedFetch<ConversationDetail>(`/conversations/${id}`),
   ask: (id: string, question: string) =>
     authedFetch<AskResult>(`/conversations/${id}/ask`, {
       method: "POST",
