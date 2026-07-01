@@ -1,5 +1,6 @@
 import type { AskResult } from "@/lib/api";
 import { ChartView } from "./chart-view";
+import { FeedbackButtons } from "./feedback-buttons";
 import { Transparency } from "./transparency";
 
 export function Answer({ answer }: { answer: AskResult }) {
@@ -44,6 +45,9 @@ export function Answer({ answer }: { answer: AskResult }) {
         latencyMs={answer.latencyMs}
         rowCount={answer.rowCount}
       />
+      {answer.messageId ? (
+        <FeedbackButtons messageId={answer.messageId} />
+      ) : null}
     </div>
   );
 }

@@ -129,13 +129,14 @@ model QueryResultCache {
 }
 
 model Embedding {
-  id           String        @id @default(cuid())
+  id           String                      @id @default(cuid())
   dataSourceId String
-  dataSource   DataSource    @relation(fields: [dataSourceId], references: [id], onDelete: Cascade)
+  dataSource   DataSource                  @relation(fields: [dataSourceId], references: [id], onDelete: Cascade)
   kind         EmbeddingKind
   content      String
   metaJson     Json?
-  createdAt    DateTime      @default(now())
+  embedding    Unsupported("vector(384)")?
+  createdAt    DateTime                    @default(now())
 
   @@index([dataSourceId])
 }

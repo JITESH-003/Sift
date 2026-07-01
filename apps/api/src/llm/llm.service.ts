@@ -1,9 +1,18 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import { LlmBudgetService } from './llm-budget.service';
 
 type Usage = { promptTokens: number; completionTokens: number };
 
 type GenResult = { sql: string; usage: Usage; provider: string };
+
+export type FewShotExample = { question: string; sql: string };
+
+export type GenerateOptions = {
+  errorFeedback?: string;
+  examples?: FewShotExample[];
+  model?: string;
+};
 
 type Provider = {
   name: string;
@@ -47,12 +56,15 @@ const CATALOG: Record<
 export class LlmService {
   private readonly logger = new Logger(LlmService.name);
 
-  constructor(private readonly config: ConfigService) {}
+  constructor(
+    private readonly config: ConfigService,
+    private readonly budget: LlmBudgetService,
+  ) {}
 
   async generateSql(
     schemaContext: string,
     question: string,
-    errorFeedback?: string,
+    options: GenerateOptions = {},
   ): Promise<GenResult> {
     const providers = this.providers();
     if (providers.length === 0) {
@@ -60,11 +72,12 @@ export class LlmService {
         'No LLM provider configured (set GEMINI_API_KEY or GROQ_API_KEY)',
       );
     }
-    const messages = this.buildMessages(schemaContext, question, errorFeedback);
+    this.budget.consume();
+    const messages = this.buildMessages(schemaContext, question, options);
     const failures: string[] = [];
     for (const provider of providers) {
       try {
-        return await this.call(provider, messages);
+        return await this.call(provider, messages, options.model);
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         failures.push(`${provider.name} (${message})`);
@@ -100,7 +113,7 @@ export class LlmService {
   private buildMessages(
     schemaContext: string,
     question: string,
-    errorFeedback?: string,
+    options: GenerateOptions,
   ): { role: string; content: string }[] {
     const system = [
       'You are a PostgreSQL expert that writes a single read-only SQL query to answer a question.',
@@ -111,18 +124,23 @@ export class LlmService {
       '- Copy every table and column name EXACTLY as written in the schema below, including any double quotes shown — never drop the quotes from a quoted name. PostgreSQL lowercases unquoted identifiers, so writing "Ticket" as Ticket will fail with "relation does not exist".',
       '- For time series, GROUP BY date_trunc on the timestamp column (one date column), not separate year/month columns.',
       '- Add a sensible ORDER BY and LIMIT for "top N" style questions.',
+      '- Any example question/SQL pairs shown are known-good queries for this schema — follow their conventions and identifier quoting.',
       '',
       'Schema:',
       schemaContext,
     ].join('\n');
     const messages: { role: string; content: string }[] = [
       { role: 'system', content: system },
-      { role: 'user', content: question },
     ];
-    if (errorFeedback) {
+    for (const example of options.examples ?? []) {
+      messages.push({ role: 'user', content: example.question });
+      messages.push({ role: 'assistant', content: example.sql });
+    }
+    messages.push({ role: 'user', content: question });
+    if (options.errorFeedback) {
       messages.push({
         role: 'user',
-        content: `The previous query failed with this error:\n${errorFeedback}\nReturn a corrected SQL query.`,
+        content: `The previous query failed with this error:\n${options.errorFeedback}\nReturn a corrected SQL query.`,
       });
     }
     return messages;
@@ -131,6 +149,7 @@ export class LlmService {
   private async call(
     provider: Provider,
     messages: { role: string; content: string }[],
+    modelOverride?: string,
   ): Promise<GenResult> {
     const base = provider.baseUrl.replace(/\/+$/, '');
     const response = await fetch(`${base}/chat/completions`, {
@@ -139,7 +158,11 @@ export class LlmService {
         'Content-Type': 'application/json',
         Authorization: `Bearer ${provider.apiKey}`,
       },
-      body: JSON.stringify({ model: provider.model, messages, temperature: 0 }),
+      body: JSON.stringify({
+        model: modelOverride ?? provider.model,
+        messages,
+        temperature: 0,
+      }),
     });
     if (!response.ok) {
       const detail = (await response.text()).slice(0, 200);

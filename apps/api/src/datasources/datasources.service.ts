@@ -2,6 +2,7 @@ import {
   BadRequestException,
   ForbiddenException,
   Injectable,
+  Logger,
   NotFoundException,
 } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
@@ -9,9 +10,10 @@ import { createHash } from 'node:crypto';
 import { assertPublicPostgresUrl } from '../common/ssrf';
 import { ConnectionRegistry } from '../connections/connection-registry.service';
 import { PrismaService } from '../prisma/prisma.service';
+import { RetrievalService } from '../rag/retrieval.service';
 import { SafetyService } from '../safety/safety.service';
 import { CreateDataSourceDto } from './dto/create-datasource.dto';
-import { IntrospectionService } from './introspection.service';
+import { IntrospectionService, type SchemaJson } from './introspection.service';
 import { TargetDbService, type Target } from './target-db.service';
 import { VizService, type Chart } from './viz.service';
 
@@ -37,8 +39,12 @@ export type RunResult =
 
 type ConnectionRef = { mode?: string; schema?: string; label?: string };
 
+const GUEST_EMAIL = 'guest@sift.local';
+
 @Injectable()
 export class DataSourcesService {
+  private readonly logger = new Logger(DataSourcesService.name);
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly introspection: IntrospectionService,
@@ -46,10 +52,12 @@ export class DataSourcesService {
     private readonly targetDb: TargetDbService,
     private readonly viz: VizService,
     private readonly registry: ConnectionRegistry,
+    private readonly retrieval: RetrievalService,
   ) {}
 
   async create(userId: string, dto: CreateDataSourceDto) {
     if (dto.connectionString) {
+      await this.assertNotGuest(userId);
       await assertPublicPostgresUrl(dto.connectionString);
       const schema = dto.schema ?? 'public';
       const target: Target = {
@@ -74,6 +82,7 @@ export class DataSourcesService {
         data: { dataSourceId: dataSource.id, schemaJson, compactText },
       });
       this.registry.set(userId, dataSource.id, dto.connectionString, schema);
+      await this.indexSchemaSafe(dataSource.id, schemaJson);
       return dataSource;
     }
     if (dto.schema) {
@@ -89,6 +98,7 @@ export class DataSourcesService {
   }
 
   async connect(userId: string, id: string, connectionString: string) {
+    await this.assertNotGuest(userId);
     const dataSource = await this.findOwned(userId, id);
     const parsed = this.safeParse(dataSource.connectionRef);
     if (parsed?.mode !== 'external') {
@@ -107,6 +117,7 @@ export class DataSourcesService {
     await this.prisma.schemaSnapshot.create({
       data: { dataSourceId: id, schemaJson, compactText },
     });
+    await this.indexSchemaSafe(id, schemaJson);
     return { connected: true };
   }
 
@@ -151,9 +162,37 @@ export class DataSourcesService {
     }
     const { schemaJson, compactText } =
       await this.introspection.introspect(target);
-    return this.prisma.schemaSnapshot.create({
+    const snapshot = await this.prisma.schemaSnapshot.create({
       data: { dataSourceId: id, schemaJson, compactText },
     });
+    await this.indexSchemaSafe(id, schemaJson);
+    return snapshot;
+  }
+
+  private async assertNotGuest(userId: string): Promise<void> {
+    const user = await this.prisma.user.findUnique({
+      where: { id: userId },
+      select: { email: true },
+    });
+    if (user?.email === GUEST_EMAIL) {
+      throw new ForbiddenException(
+        'Guests can explore the demo dataset only. Sign up to connect your own database.',
+      );
+    }
+  }
+
+  private async indexSchemaSafe(
+    dataSourceId: string,
+    schemaJson: SchemaJson,
+  ): Promise<void> {
+    try {
+      await this.retrieval.indexSchema(dataSourceId, schemaJson);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      this.logger.warn(
+        `Schema embedding failed for ${dataSourceId}: ${message}`,
+      );
+    }
   }
 
   async run(userId: string, id: string, sql: string): Promise<RunResult> {

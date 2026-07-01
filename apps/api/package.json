@@ -16,6 +16,7 @@
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "prisma:generate": "prisma generate",
     "db:seed:demo": "node --env-file=.env scripts/seed-demo.mjs",
+    "eval": "node --env-file=.env scripts/eval.mjs",
     "postinstall": "prisma generate",
     "test": "jest",
     "test:watch": "jest --watch",
@@ -24,12 +25,14 @@
     "test:e2e": "jest --config ./test/jest-e2e.json"
   },
   "dependencies": {
+    "@huggingface/transformers": "^4.2.0",
     "@nestjs/common": "^11.0.1",
     "@nestjs/config": "^4.0.4",
     "@nestjs/core": "^11.0.1",
     "@nestjs/jwt": "^11.0.2",
     "@nestjs/passport": "^11.0.5",
     "@nestjs/platform-express": "^11.0.1",
+    "@nestjs/throttler": "^6.5.0",
     "@prisma/client": "^6.3.0",
     "argon2": "^0.44.0",
     "class-transformer": "^0.5.1",

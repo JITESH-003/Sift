@@ -26,6 +26,7 @@ export type AskMeta = {
   provider: string;
   promptTokens: number;
   completionTokens: number;
+  examplesUsed?: number;
 };
 
 export type AskResult =
@@ -37,10 +38,11 @@ export type AskResult =
       latencyMs: number;
       chart: Chart;
       rows: Record<string, unknown>[];
+      messageId?: string;
       meta: AskMeta;
     }
-  | { status: "blocked"; reason: string; meta: AskMeta }
-  | { status: "error"; sql: string; error: string; meta: AskMeta }
+  | { status: "blocked"; reason: string; messageId?: string; meta: AskMeta }
+  | { status: "error"; sql: string; error: string; messageId?: string; meta: AskMeta }
   | { status: "disconnected"; meta: AskMeta };
 
 export type SchemaColumn = {
@@ -190,6 +192,14 @@ export const conversationsApi = {
       method: "POST",
       body: { question },
     }),
+};
+
+export const feedbackApi = {
+  vote: (messageId: string, vote: "up" | "down") =>
+    authedFetch<{ vote: "up" | "down"; promoted: boolean }>(
+      `/conversations/messages/${messageId}/feedback`,
+      { method: "POST", body: { vote } },
+    ),
 };
 
 type StreamHandlers = {

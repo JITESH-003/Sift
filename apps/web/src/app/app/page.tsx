@@ -3,6 +3,7 @@
 import { useRouter } from "next/navigation";
 import { useEffect, useRef, useState } from "react";
 import { Answer } from "@/components/chat/answer";
+import { FeedbackButtons } from "@/components/chat/feedback-buttons";
 import { ConnectDbDialog } from "@/components/connect-db-dialog";
 import { SchemaDialog } from "@/components/schema-dialog";
 import { Badge } from "@/components/ui/badge";
@@ -412,6 +413,9 @@ export default function AppHome() {
                           tokens
                         </span>
                       </div>
+                      {m.query.status === "ok" ? (
+                        <FeedbackButtons messageId={m.id} />
+                      ) : null}
                     </>
                   ) : null}
                 </div>

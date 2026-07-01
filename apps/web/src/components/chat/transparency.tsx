@@ -39,6 +39,11 @@ export function Transparency({
 
   const bits: string[] = [meta.provider];
   if (meta.retried) bits.push("retried once");
+  if (meta.examplesUsed && meta.examplesUsed > 0) {
+    bits.push(
+      `${meta.examplesUsed} retrieved example${meta.examplesUsed > 1 ? "s" : ""}`,
+    );
+  }
   bits.push(`${meta.promptTokens + meta.completionTokens} tokens`);
   if (typeof latencyMs === "number") bits.push(`${latencyMs} ms`);
   if (typeof rowCount === "number") bits.push(`${rowCount} rows`);

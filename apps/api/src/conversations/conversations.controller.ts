@@ -9,12 +9,14 @@ import {
   Res,
   UseGuards,
 } from '@nestjs/common';
+import { Throttle } from '@nestjs/throttler';
 import type { Response } from 'express';
 import { CurrentUser } from '../auth/current-user.decorator';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { ConversationsService } from './conversations.service';
 import { AskDto } from './dto/ask.dto';
 import { CreateConversationDto } from './dto/create-conversation.dto';
+import { FeedbackDto } from './dto/feedback.dto';
 
 @UseGuards(JwtAuthGuard)
 @Controller('conversations')
@@ -39,6 +41,7 @@ export class ConversationsController {
     return this.conversations.get(userId, id);
   }
 
+  @Throttle({ default: { ttl: 60000, limit: 10 } })
   @HttpCode(HttpStatus.OK)
   @Post(':id/ask')
   ask(
@@ -49,6 +52,17 @@ export class ConversationsController {
     return this.conversations.ask(userId, id, dto.question);
   }
 
+  @HttpCode(HttpStatus.OK)
+  @Post('messages/:messageId/feedback')
+  feedback(
+    @CurrentUser('userId') userId: string,
+    @Param('messageId') messageId: string,
+    @Body() dto: FeedbackDto,
+  ) {
+    return this.conversations.recordFeedback(userId, messageId, dto.vote);
+  }
+
+  @Throttle({ default: { ttl: 60000, limit: 10 } })
   @Post(':id/ask/stream')
   async askStream(
     @CurrentUser('userId') userId: string,
