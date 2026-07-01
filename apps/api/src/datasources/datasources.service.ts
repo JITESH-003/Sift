@@ -39,8 +39,6 @@ export type RunResult =
 
 type ConnectionRef = { mode?: string; schema?: string; label?: string };
 
-const GUEST_EMAIL = 'guest@sift.local';
-
 @Injectable()
 export class DataSourcesService {
   private readonly logger = new Logger(DataSourcesService.name);
@@ -57,7 +55,6 @@ export class DataSourcesService {
 
   async create(userId: string, dto: CreateDataSourceDto) {
     if (dto.connectionString) {
-      await this.assertNotGuest(userId);
       await assertPublicPostgresUrl(dto.connectionString);
       const schema = dto.schema ?? 'public';
       const target: Target = {
@@ -98,7 +95,6 @@ export class DataSourcesService {
   }
 
   async connect(userId: string, id: string, connectionString: string) {
-    await this.assertNotGuest(userId);
     const dataSource = await this.findOwned(userId, id);
     const parsed = this.safeParse(dataSource.connectionRef);
     if (parsed?.mode !== 'external') {
@@ -167,18 +163,6 @@ export class DataSourcesService {
     });
     await this.indexSchemaSafe(id, schemaJson);
     return snapshot;
-  }
-
-  private async assertNotGuest(userId: string): Promise<void> {
-    const user = await this.prisma.user.findUnique({
-      where: { id: userId },
-      select: { email: true },
-    });
-    if (user?.email === GUEST_EMAIL) {
-      throw new ForbiddenException(
-        'Guests can explore the demo dataset only. Sign up to connect your own database.',
-      );
-    }
   }
 
   private async indexSchemaSafe(

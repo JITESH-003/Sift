@@ -33,7 +33,8 @@ export function useAuth() {
   const guest = useCallback(async () => {
     setSession(await authApi.guest());
   }, []);
-  const logout = useCallback(() => {
+  const logout = useCallback(async () => {
+    await authApi.logout().catch(() => undefined);
     setSession(null);
   }, []);
 

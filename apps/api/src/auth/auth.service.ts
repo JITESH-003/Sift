@@ -15,6 +15,16 @@ import { RegisterDto } from './dto/register.dto';
 
 type Tokens = { accessToken: string; refreshToken: string };
 
+const GUEST_DOMAIN = '@sift.local';
+const GUEST_TTL_MS = 24 * 60 * 60 * 1000;
+
+function isGuestEmail(email: string): boolean {
+  return (
+    email === `guest${GUEST_DOMAIN}` ||
+    (email.startsWith('guest_') && email.endsWith(GUEST_DOMAIN))
+  );
+}
+
 @Injectable()
 export class AuthService {
   constructor(
@@ -53,20 +63,26 @@ export class AuthService {
   }
 
   async guest() {
-    const email = 'guest@sift.local';
-    const existing = await this.prisma.user.findUnique({ where: { email } });
-    const user =
-      existing ??
-      (await this.prisma.user.create({
-        data: {
-          email,
-          passwordHash: await argon2.hash(randomUUID()),
-          name: 'Guest',
-        },
-      }));
+    await this.sweepStaleGuests();
+    const user = await this.prisma.user.create({
+      data: {
+        email: `guest_${randomUUID()}${GUEST_DOMAIN}`,
+        passwordHash: await argon2.hash(randomUUID()),
+        name: 'Guest',
+      },
+    });
     const tokens = await this.issueTokens(user.id, user.email);
     await this.persistRefreshToken(user.id, tokens.refreshToken);
     return { user: this.sanitize(user), ...tokens };
+  }
+
+  private async sweepStaleGuests() {
+    const cutoff = new Date(Date.now() - GUEST_TTL_MS);
+    await this.prisma.user
+      .deleteMany({
+        where: { email: { startsWith: 'guest_' }, createdAt: { lt: cutoff } },
+      })
+      .catch(() => undefined);
   }
 
   async refresh(userId: string, refreshToken: string) {
@@ -84,6 +100,16 @@ export class AuthService {
 
   async logout(userId: string) {
     this.registry.clearUser(userId);
+    const user = await this.prisma.user.findUnique({
+      where: { id: userId },
+      select: { email: true },
+    });
+    if (user && isGuestEmail(user.email)) {
+      await this.prisma.user
+        .delete({ where: { id: userId } })
+        .catch(() => undefined);
+      return { success: true };
+    }
     await this.prisma.user.update({
       where: { id: userId },
       data: { hashedRefreshToken: null },

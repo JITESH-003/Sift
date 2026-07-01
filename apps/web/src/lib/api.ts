@@ -155,6 +155,8 @@ export const authApi = {
   login: (body: { email: string; password: string }) =>
     publicFetch<AuthResult>("/auth/login", { method: "POST", body }),
   guest: () => publicFetch<AuthResult>("/auth/guest", { method: "POST" }),
+  logout: () =>
+    authedFetch<{ success: boolean }>("/auth/logout", { method: "POST" }),
 };
 
 export const dataSourcesApi = {

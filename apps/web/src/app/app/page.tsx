@@ -36,6 +36,8 @@ const SUGGESTIONS = [
   "Revenue by customer country",
 ];
 
+const DEMO_EXAMPLE = SUGGESTIONS[0];
+
 const STATUS_LABEL: Record<string, string> = {
   generating: "Generating SQL…",
   executing: "Running the query…",
@@ -73,6 +75,7 @@ export default function AppHome() {
   const turnSeq = useRef(0);
   const started = useRef(false);
   const scrollRef = useRef<HTMLDivElement | null>(null);
+  const askRef = useRef<typeof ask | null>(null);
 
   useEffect(() => {
     if (hydrated && !user) router.replace("/login");
@@ -84,6 +87,7 @@ export default function AppHome() {
     void (async () => {
       try {
         let sources = await dataSourcesApi.list();
+        let createdDemo = false;
         if (sources.length === 0) {
           const demo = await dataSourcesApi.create({
             name: "Demo e-commerce",
@@ -91,6 +95,7 @@ export default function AppHome() {
           });
           await dataSourcesApi.introspect(demo.id);
           sources = [demo];
+          createdDemo = true;
         }
         setDataSources(sources);
         const ds = sources[0];
@@ -107,6 +112,10 @@ export default function AppHome() {
           });
           setConversations((prev) => [created, ...prev]);
           setActiveConvoId(created.id);
+          if (createdDemo) {
+            setBooting(false);
+            await askRef.current?.(DEMO_EXAMPLE, created.id);
+          }
         }
       } catch (e) {
         setBootError(e instanceof Error ? e.message : "Setup failed");
@@ -115,6 +124,10 @@ export default function AppHome() {
       }
     })();
   }, [hydrated, user]);
+
+  useEffect(() => {
+    askRef.current = ask;
+  });
 
   useEffect(() => {
     scrollRef.current?.scrollTo({
@@ -214,9 +227,9 @@ export default function AppHome() {
     })();
   }
 
-  async function ask(question: string) {
+  async function ask(question: string, convoId: string | null = activeConvoId) {
     const q = question.trim();
-    if (!q || !activeConvoId || asking) return;
+    if (!q || !convoId || asking) return;
     if (!connected) {
       openReconnect();
       return;
@@ -229,7 +242,7 @@ export default function AppHome() {
     ]);
     setConversations((prev) =>
       prev.map((c) =>
-        c.id === activeConvoId && !c.title ? { ...c, title: q.slice(0, 60) } : c,
+        c.id === convoId && !c.title ? { ...c, title: q.slice(0, 60) } : c,
       ),
     );
     setAsking(true);
@@ -238,7 +251,7 @@ export default function AppHome() {
         prev.map((t) => (t.id === id ? { ...t, ...changes } : t)),
       );
     try {
-      await askStream(activeConvoId, q, {
+      await askStream(convoId, q, {
         onStatus: (value) => patch({ status: STATUS_LABEL[value] ?? value }),
         onSql: (sql) => patch({ sql }),
         onFinal: (answer) => {
@@ -342,8 +355,7 @@ export default function AppHome() {
           <button
             type="button"
             onClick={() => {
-              logout();
-              router.replace("/");
+              void logout().then(() => router.replace("/"));
             }}
             className="text-accent hover:underline"
           >
