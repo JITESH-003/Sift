@@ -4,11 +4,10 @@ import {
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
-import { ConfigService } from '@nestjs/config';
 import { Prisma } from '@prisma/client';
 import { createHash } from 'node:crypto';
-import { decryptSecret, encryptSecret } from '../common/encryption';
 import { assertPublicPostgresUrl } from '../common/ssrf';
+import { ConnectionRegistry } from '../connections/connection-registry.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { SafetyService } from '../safety/safety.service';
 import { CreateDataSourceDto } from './dto/create-datasource.dto';
@@ -33,9 +32,10 @@ export type RunResult =
       rows: Record<string, unknown>[];
     }
   | { status: 'blocked'; reason: string }
-  | { status: 'error'; sql: string; error: string };
+  | { status: 'error'; sql: string; error: string }
+  | { status: 'disconnected' };
 
-type ConnectionRef = { mode?: string; schema?: string; cipher?: string };
+type ConnectionRef = { mode?: string; schema?: string; label?: string };
 
 @Injectable()
 export class DataSourcesService {
@@ -45,37 +45,80 @@ export class DataSourcesService {
     private readonly safety: SafetyService,
     private readonly targetDb: TargetDbService,
     private readonly viz: VizService,
-    private readonly config: ConfigService,
+    private readonly registry: ConnectionRegistry,
   ) {}
 
   async create(userId: string, dto: CreateDataSourceDto) {
-    let connectionRef: string;
     if (dto.connectionString) {
       await assertPublicPostgresUrl(dto.connectionString);
-      const cipher = encryptSecret(
-        dto.connectionString,
-        this.config.getOrThrow<string>('APP_ENCRYPTION_KEY'),
-      );
-      connectionRef = JSON.stringify({
-        mode: 'external',
-        cipher,
-        schema: dto.schema ?? 'public',
+      const schema = dto.schema ?? 'public';
+      const target: Target = {
+        connectionString: dto.connectionString,
+        schema,
+        readonlyRole: false,
+      };
+      const { schemaJson, compactText } =
+        await this.introspection.introspect(target);
+      const dataSource = await this.prisma.dataSource.create({
+        data: {
+          userId,
+          name: dto.name,
+          connectionRef: JSON.stringify({
+            mode: 'external',
+            schema,
+            label: this.label(dto.connectionString),
+          }),
+        },
       });
-    } else if (dto.schema) {
-      connectionRef = JSON.stringify({ mode: 'local', schema: dto.schema });
-    } else {
-      throw new BadRequestException('Provide a schema or a connectionString');
+      await this.prisma.schemaSnapshot.create({
+        data: { dataSourceId: dataSource.id, schemaJson, compactText },
+      });
+      this.registry.set(userId, dataSource.id, dto.connectionString, schema);
+      return dataSource;
     }
-    return this.prisma.dataSource.create({
-      data: { userId, name: dto.name, connectionRef },
-    });
+    if (dto.schema) {
+      return this.prisma.dataSource.create({
+        data: {
+          userId,
+          name: dto.name,
+          connectionRef: JSON.stringify({ mode: 'local', schema: dto.schema }),
+        },
+      });
+    }
+    throw new BadRequestException('Provide a schema or a connectionString');
   }
 
-  list(userId: string) {
-    return this.prisma.dataSource.findMany({
+  async connect(userId: string, id: string, connectionString: string) {
+    const dataSource = await this.findOwned(userId, id);
+    const parsed = this.safeParse(dataSource.connectionRef);
+    if (parsed?.mode !== 'external') {
+      throw new BadRequestException(
+        'This data source does not use a connection string',
+      );
+    }
+    await assertPublicPostgresUrl(connectionString);
+    const schema = parsed.schema ?? 'public';
+    this.registry.set(userId, id, connectionString, schema);
+    const { schemaJson, compactText } = await this.introspection.introspect({
+      connectionString,
+      schema,
+      readonlyRole: false,
+    });
+    await this.prisma.schemaSnapshot.create({
+      data: { dataSourceId: id, schemaJson, compactText },
+    });
+    return { connected: true };
+  }
+
+  async list(userId: string) {
+    const rows = await this.prisma.dataSource.findMany({
       where: { userId },
       orderBy: { createdAt: 'desc' },
     });
+    return rows.map((ds) => ({
+      ...ds,
+      connected: this.isConnected(ds.connectionRef, userId, ds.id),
+    }));
   }
 
   async get(userId: string, id: string) {
@@ -84,12 +127,28 @@ export class DataSourcesService {
       where: { dataSourceId: id },
       orderBy: { createdAt: 'desc' },
     });
-    return { ...dataSource, snapshot };
+    return {
+      ...dataSource,
+      snapshot,
+      connected: this.isConnected(dataSource.connectionRef, userId, id),
+    };
+  }
+
+  async connectionState(userId: string, id: string): Promise<boolean> {
+    const dataSource = await this.findOwned(userId, id);
+    return this.isConnected(dataSource.connectionRef, userId, id);
   }
 
   async introspect(userId: string, id: string) {
     const dataSource = await this.findOwned(userId, id);
-    const target = this.resolveTarget(dataSource.connectionRef);
+    const target = this.resolveTarget(
+      userId,
+      dataSource.id,
+      dataSource.connectionRef,
+    );
+    if (!target) {
+      throw new BadRequestException('Reconnect this database first');
+    }
     const { schemaJson, compactText } =
       await this.introspection.introspect(target);
     return this.prisma.schemaSnapshot.create({
@@ -99,7 +158,14 @@ export class DataSourcesService {
 
   async run(userId: string, id: string, sql: string): Promise<RunResult> {
     const dataSource = await this.findOwned(userId, id);
-    const target = this.resolveTarget(dataSource.connectionRef);
+    const target = this.resolveTarget(
+      userId,
+      dataSource.id,
+      dataSource.connectionRef,
+    );
+    if (!target) {
+      return { status: 'disconnected' };
+    }
     const verdict = this.safety.validate(sql);
     if (!verdict.ok) {
       return { status: 'blocked', reason: verdict.reason };
@@ -158,7 +224,21 @@ export class DataSourcesService {
     }
   }
 
-  private resolveTarget(connectionRef: string): Target {
+  private isConnected(
+    connectionRef: string,
+    userId: string,
+    id: string,
+  ): boolean {
+    const parsed = this.safeParse(connectionRef);
+    if (parsed?.mode === 'local') return true;
+    return this.registry.has(userId, id);
+  }
+
+  private resolveTarget(
+    userId: string,
+    id: string,
+    connectionRef: string,
+  ): Target | null {
     const parsed = this.safeParse(connectionRef);
     if (parsed?.mode === 'local' && parsed.schema) {
       return {
@@ -167,18 +247,25 @@ export class DataSourcesService {
         readonlyRole: true,
       };
     }
-    if (parsed?.mode === 'external' && parsed.cipher) {
-      const connectionString = decryptSecret(
-        parsed.cipher,
-        this.config.getOrThrow<string>('APP_ENCRYPTION_KEY'),
-      );
+    if (parsed?.mode === 'external') {
+      const live = this.registry.get(userId, id);
+      if (!live) return null;
       return {
-        connectionString,
+        connectionString: live.connectionString,
         schema: parsed.schema ?? 'public',
         readonlyRole: false,
       };
     }
-    throw new BadRequestException('Unsupported data source connection');
+    return null;
+  }
+
+  private label(connectionString: string): string {
+    try {
+      const url = new URL(connectionString);
+      return `${url.host}${url.pathname}`;
+    } catch {
+      return 'external';
+    }
   }
 
   private safeParse(value: string): ConnectionRef | null {

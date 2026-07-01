@@ -60,7 +60,12 @@ export default function AppHome() {
   const [turns, setTurns] = useState<Turn[]>([]);
   const [input, setInput] = useState("");
   const [asking, setAsking] = useState(false);
+  const [connected, setConnected] = useState(true);
   const [connectOpen, setConnectOpen] = useState(false);
+  const [reconnectFor, setReconnectFor] = useState<{
+    id: string;
+    name: string;
+  } | null>(null);
   const [schema, setSchema] = useState<SchemaJson | null>(null);
   const [schemaOpen, setSchemaOpen] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
@@ -119,7 +124,8 @@ export default function AppHome() {
 
   async function loadSchema(dsId: string) {
     let full = await dataSourcesApi.get(dsId);
-    if (!full.snapshot) {
+    setConnected(full.connected);
+    if (!full.snapshot && full.connected) {
       await dataSourcesApi.introspect(dsId);
       full = await dataSourcesApi.get(dsId);
     }
@@ -173,8 +179,26 @@ export default function AppHome() {
     }
   }
 
-  function onConnected(ds: DataSource) {
+  function openConnect() {
+    setReconnectFor(null);
+    setConnectOpen(true);
+  }
+
+  function openReconnect() {
+    const ds = dataSources.find((d) => d.id === activeDsId);
+    if (!ds) return;
+    setReconnectFor({ id: ds.id, name: ds.name });
+    setConnectOpen(true);
+  }
+
+  function onDialogDone(ds?: DataSource) {
     setConnectOpen(false);
+    setReconnectFor(null);
+    if (!ds) {
+      setConnected(true);
+      if (activeDsId) void loadSchema(activeDsId);
+      return;
+    }
     setDataSources((prev) => [ds, ...prev]);
     setActiveDsId(ds.id);
     setTurns([]);
@@ -192,6 +216,10 @@ export default function AppHome() {
   async function ask(question: string) {
     const q = question.trim();
     if (!q || !activeConvoId || asking) return;
+    if (!connected) {
+      openReconnect();
+      return;
+    }
     setInput("");
     const id = (turnSeq.current += 1);
     setTurns((prev) => [
@@ -212,7 +240,10 @@ export default function AppHome() {
       await askStream(activeConvoId, q, {
         onStatus: (value) => patch({ status: STATUS_LABEL[value] ?? value }),
         onSql: (sql) => patch({ sql }),
-        onFinal: (answer) => patch({ answer, status: null }),
+        onFinal: (answer) => {
+          patch({ answer, status: null });
+          if (answer.status === "disconnected") setConnected(false);
+        },
         onError: (message) =>
           patch({
             status: null,
@@ -266,11 +297,7 @@ export default function AppHome() {
               </option>
             ))}
           </select>
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={() => setConnectOpen(true)}
-          >
+          <Button variant="outline" size="sm" onClick={openConnect}>
             Connect a database
           </Button>
           <Button size="sm" onClick={() => void newChat()}>
@@ -288,7 +315,7 @@ export default function AppHome() {
             variant="ghost"
             size="sm"
             onClick={() => void refreshSchema()}
-            disabled={refreshing || !activeDsId}
+            disabled={refreshing || !activeDsId || !connected}
           >
             {refreshing ? "Refreshing…" : "Refresh schema"}
           </Button>
@@ -417,6 +444,17 @@ export default function AppHome() {
         </div>
 
         <div className="border-t border-border px-4 py-4">
+          {!connected && !booting ? (
+            <div className="mx-auto mb-3 flex max-w-3xl items-center justify-between gap-3 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">
+              <span>
+                This database is disconnected. Reconnect to keep chatting — your
+                connection string is never stored.
+              </span>
+              <Button size="sm" onClick={openReconnect}>
+                Reconnect
+              </Button>
+            </div>
+          ) : null}
           <form
             className="mx-auto flex max-w-3xl items-center gap-2"
             onSubmit={(e) => {
@@ -427,10 +465,19 @@ export default function AppHome() {
             <Input
               value={input}
               onChange={(e) => setInput(e.target.value)}
-              placeholder={booting ? "Setting up…" : "Ask a question…"}
-              disabled={booting || asking}
+              placeholder={
+                booting
+                  ? "Setting up…"
+                  : !connected
+                    ? "Reconnect to ask a question…"
+                    : "Ask a question…"
+              }
+              disabled={booting || asking || !connected}
             />
-            <Button type="submit" disabled={booting || asking || !input.trim()}>
+            <Button
+              type="submit"
+              disabled={booting || asking || !connected || !input.trim()}
+            >
               {asking ? "…" : "Ask"}
             </Button>
           </form>
@@ -439,8 +486,12 @@ export default function AppHome() {
 
       <ConnectDbDialog
         open={connectOpen}
-        onClose={() => setConnectOpen(false)}
-        onConnected={onConnected}
+        onClose={() => {
+          setConnectOpen(false);
+          setReconnectFor(null);
+        }}
+        onDone={onDialogDone}
+        reconnect={reconnectFor}
       />
       <SchemaDialog
         open={schemaOpen}

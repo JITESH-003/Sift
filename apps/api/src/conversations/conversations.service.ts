@@ -77,6 +77,23 @@ export class ConversationsService {
       );
     }
 
+    const connected = await this.dataSources.connectionState(
+      userId,
+      conversation.dataSourceId,
+    );
+    if (!connected) {
+      return {
+        status: 'disconnected' as const,
+        meta: {
+          confidence: 'low',
+          retried: false,
+          provider: '-',
+          promptTokens: 0,
+          completionTokens: 0,
+        },
+      };
+    }
+
     if (!conversation.title) {
       await this.prisma.conversation.update({
         where: { id },
@@ -101,7 +118,7 @@ export class ConversationsService {
     let completionTokens = generated.usage.completionTokens;
     let retried = false;
 
-    if (result.status !== 'ok') {
+    if (result.status === 'error' || result.status === 'blocked') {
       onEvent({ type: 'status', value: 'retrying' });
       let feedback = result.status === 'error' ? result.error : result.reason;
       if (result.status === 'error' && /does not exist/i.test(result.error)) {
@@ -137,25 +154,27 @@ export class ConversationsService {
       },
     });
 
-    await this.prisma.query.create({
-      data: {
-        messageId: assistantMessage.id,
-        sql: result.status === 'blocked' ? generated.sql : result.sql,
-        status: result.status,
-        rowCount: result.status === 'ok' ? result.rowCount : null,
-        latencyMs: result.status === 'ok' ? result.latencyMs : null,
-        promptTokens,
-        completionTokens,
-        confidence,
-        retried,
-        errorText:
-          result.status === 'error'
-            ? result.error
-            : result.status === 'blocked'
-              ? result.reason
-              : null,
-      },
-    });
+    if (result.status !== 'disconnected') {
+      await this.prisma.query.create({
+        data: {
+          messageId: assistantMessage.id,
+          sql: result.status === 'blocked' ? generated.sql : result.sql,
+          status: result.status,
+          rowCount: result.status === 'ok' ? result.rowCount : null,
+          latencyMs: result.status === 'ok' ? result.latencyMs : null,
+          promptTokens,
+          completionTokens,
+          confidence,
+          retried,
+          errorText:
+            result.status === 'error'
+              ? result.error
+              : result.status === 'blocked'
+                ? result.reason
+                : null,
+        },
+      });
+    }
 
     return {
       ...result,
@@ -175,6 +194,9 @@ export class ConversationsService {
     }
     if (result.status === 'blocked') {
       return `Blocked: ${result.reason}`;
+    }
+    if (result.status === 'disconnected') {
+      return 'Reconnect the database to run this query.';
     }
     return `Error: ${result.error}`;
   }

@@ -3,6 +3,17 @@ import { ChartView } from "./chart-view";
 import { Transparency } from "./transparency";
 
 export function Answer({ answer }: { answer: AskResult }) {
+  if (answer.status === "disconnected") {
+    return (
+      <div className="rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900">
+        <p className="font-medium">This database is disconnected.</p>
+        <p className="mt-1">
+          Reconnect it to run this query — your connection string is never
+          stored.
+        </p>
+      </div>
+    );
+  }
   if (answer.status === "blocked") {
     return (
       <div className="rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900">

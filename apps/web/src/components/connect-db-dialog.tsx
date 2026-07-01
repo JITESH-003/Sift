@@ -8,11 +8,13 @@ import { dataSourcesApi, type DataSource } from "@/lib/api";
 export function ConnectDbDialog({
   open,
   onClose,
-  onConnected,
+  onDone,
+  reconnect,
 }: {
   open: boolean;
   onClose: () => void;
-  onConnected: (ds: DataSource) => void;
+  onDone: (ds?: DataSource) => void;
+  reconnect?: { id: string; name: string } | null;
 }) {
   const [name, setName] = useState("");
   const [url, setUrl] = useState("");
@@ -26,18 +28,25 @@ export function ConnectDbDialog({
     e.preventDefault();
     setError(null);
     setPending(true);
-    dataSourcesApi
-      .create({
+    const run = async (): Promise<DataSource | undefined> => {
+      if (reconnect) {
+        await dataSourcesApi.connect(reconnect.id, url.trim());
+        return undefined;
+      }
+      const ds = await dataSourcesApi.create({
         name: name.trim() || "My database",
         connectionString: url.trim(),
         schema: schema.trim() || undefined,
-      })
-      .then(async (ds) => {
-        await dataSourcesApi.introspect(ds.id);
+      });
+      await dataSourcesApi.introspect(ds.id);
+      return ds;
+    };
+    run()
+      .then((ds) => {
         setUrl("");
         setName("");
         setSchema("public");
-        onConnected(ds);
+        onDone(ds);
       })
       .catch((err: unknown) =>
         setError(err instanceof Error ? err.message : "Could not connect"),
@@ -48,10 +57,13 @@ export function ConnectDbDialog({
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 px-4">
       <div className="w-full max-w-md rounded-xl border border-border bg-surface p-6 shadow-lg">
-        <h2 className="text-lg font-medium">Connect a database</h2>
+        <h2 className="text-lg font-medium">
+          {reconnect ? `Reconnect ${reconnect.name}` : "Connect a database"}
+        </h2>
         <p className="mt-1 text-sm text-muted">
-          Paste a PostgreSQL connection string. Prefer a read-only user — Sift
-          only ever runs SELECTs, but read-only credentials are safest.
+          {reconnect
+            ? "Your connection string is never stored, so paste it again to resume this database for the rest of your session."
+            : "Paste a PostgreSQL connection string. Prefer a read-only user — Sift only ever runs SELECTs, but read-only credentials are safest."}
         </p>
         <form className="mt-4 flex flex-col gap-3" onSubmit={submit}>
           {error ? (
@@ -59,14 +71,16 @@ export function ConnectDbDialog({
               {error}
             </p>
           ) : null}
-          <label className="flex flex-col gap-1.5 text-sm text-muted">
-            Name
-            <Input
-              value={name}
-              onChange={(e) => setName(e.target.value)}
-              placeholder="My database"
-            />
-          </label>
+          {reconnect ? null : (
+            <label className="flex flex-col gap-1.5 text-sm text-muted">
+              Name
+              <Input
+                value={name}
+                onChange={(e) => setName(e.target.value)}
+                placeholder="My database"
+              />
+            </label>
+          )}
           <label className="flex flex-col gap-1.5 text-sm text-muted">
             Connection string
             <Input
@@ -76,14 +90,16 @@ export function ConnectDbDialog({
               required
             />
           </label>
-          <label className="flex flex-col gap-1.5 text-sm text-muted">
-            Schema
-            <Input
-              value={schema}
-              onChange={(e) => setSchema(e.target.value)}
-              placeholder="public"
-            />
-          </label>
+          {reconnect ? null : (
+            <label className="flex flex-col gap-1.5 text-sm text-muted">
+              Schema
+              <Input
+                value={schema}
+                onChange={(e) => setSchema(e.target.value)}
+                placeholder="public"
+              />
+            </label>
+          )}
           <div className="mt-2 flex justify-end gap-2">
             <Button
               type="button"
@@ -94,7 +110,13 @@ export function ConnectDbDialog({
               Cancel
             </Button>
             <Button type="submit" disabled={pending || !url.trim()}>
-              {pending ? "Connecting…" : "Connect"}
+              {pending
+                ? reconnect
+                  ? "Reconnecting…"
+                  : "Connecting…"
+                : reconnect
+                  ? "Reconnect"
+                  : "Connect"}
             </Button>
           </div>
         </form>

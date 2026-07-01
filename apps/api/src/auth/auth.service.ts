@@ -8,6 +8,7 @@ import { JwtService, type JwtSignOptions } from '@nestjs/jwt';
 import type { User } from '@prisma/client';
 import * as argon2 from 'argon2';
 import { randomUUID } from 'node:crypto';
+import { ConnectionRegistry } from '../connections/connection-registry.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { LoginDto } from './dto/login.dto';
 import { RegisterDto } from './dto/register.dto';
@@ -20,6 +21,7 @@ export class AuthService {
     private readonly prisma: PrismaService,
     private readonly jwt: JwtService,
     private readonly config: ConfigService,
+    private readonly registry: ConnectionRegistry,
   ) {}
 
   async register(dto: RegisterDto) {
@@ -81,6 +83,7 @@ export class AuthService {
   }
 
   async logout(userId: string) {
+    this.registry.clearUser(userId);
     await this.prisma.user.update({
       where: { id: userId },
       data: { hashedRefreshToken: null },

@@ -11,6 +11,7 @@ import {
 import { CurrentUser } from '../auth/current-user.decorator';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { DataSourcesService } from './datasources.service';
+import { ConnectDataSourceDto } from './dto/connect-datasource.dto';
 import { CreateDataSourceDto } from './dto/create-datasource.dto';
 import { RunSqlDto } from './dto/run-sql.dto';
 
@@ -50,5 +51,15 @@ export class DataSourcesController {
     @Body() dto: RunSqlDto,
   ) {
     return this.dataSources.run(userId, id, dto.sql);
+  }
+
+  @HttpCode(HttpStatus.OK)
+  @Post(':id/connect')
+  connect(
+    @CurrentUser('userId') userId: string,
+    @Param('id') id: string,
+    @Body() dto: ConnectDataSourceDto,
+  ) {
+    return this.dataSources.connect(userId, id, dto.connectionString);
   }
 }

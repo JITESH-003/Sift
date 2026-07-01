@@ -40,7 +40,8 @@ export type AskResult =
       meta: AskMeta;
     }
   | { status: "blocked"; reason: string; meta: AskMeta }
-  | { status: "error"; sql: string; error: string; meta: AskMeta };
+  | { status: "error"; sql: string; error: string; meta: AskMeta }
+  | { status: "disconnected"; meta: AskMeta };
 
 export type SchemaColumn = {
   name: string;
@@ -59,6 +60,7 @@ export type DataSource = {
   name: string;
   kind: string;
   createdAt: string;
+  connected?: boolean;
 };
 
 export type Conversation = {
@@ -162,11 +164,19 @@ export const dataSourcesApi = {
   }) => authedFetch<DataSource>("/datasources", { method: "POST", body }),
   get: (id: string) =>
     authedFetch<
-      DataSource & { snapshot: { id: string; schemaJson: SchemaJson } | null }
+      DataSource & {
+        snapshot: { id: string; schemaJson: SchemaJson } | null;
+        connected: boolean;
+      }
     >(`/datasources/${id}`),
   introspect: (id: string) =>
     authedFetch<{ id: string }>(`/datasources/${id}/introspect`, {
       method: "POST",
+    }),
+  connect: (id: string, connectionString: string) =>
+    authedFetch<{ connected: boolean }>(`/datasources/${id}/connect`, {
+      method: "POST",
+      body: { connectionString },
     }),
 };
 
